@@ -1497,7 +1497,7 @@ SetExpansion(ab, txt) {
 
 OpenExpansions(*) {
     if !FileExist(EXP_FILE)
-        return {msg: "Aucune expansion (exp ;abc texte)"}
+        return {msg: "Aucune expansion (exp `;abc texte)"}
     Run(EXP_FILE)
     return {msg: ""}
 }
