@@ -44,10 +44,24 @@ Entrée sur un calcul copie le résultat. Flèches haut/bas : historique (conser
 | Mot de passe | `mdp` (16) · `mdp 24` — copié |
 | Couleurs | `#FF8800` · `#f80` · `rgb(255, 136, 0)` |
 | Timestamps | `ts` · `ts 1732300000` · `ts 25/12/2026 18:00` |
+| Notes | `note acheter du café` · `notes` (ouvre le fichier) |
+| Dev | `uuid` · `b64 texte` · `b64d SGVsbG8=` · `sha256 texte` · `md5 texte` · `url café & thé` · `urld caf%C3%A9` |
+| Expansions | `exp ;mail moi@exemple.fr` · `exp ;mail` (supprime) · `exp` (liste) |
 | Autoclic | `auto F6 5ms` · `auto F7 50ms droit x100` · `auto F8 10ms maintien` · `auto stop` |
 
 `m` = mètre, `M` = million : pour les minutes, écrire `min`.  
 Les taux de change viennent de [open.er-api.com](https://open.er-api.com) (mis à jour toutes les 6 h).
 
+### Raccourcis globaux (Ctrl gauche + Alt gauche, panneau fermé)
+| Touche | Action |
+|---|---|
+| `Ctrl + Alt + C` | Pipette : copie le code couleur du pixel sous la souris |
+| `Ctrl + Alt + T` | OCR : sélectionner une zone de l'écran, son texte est copié |
+| `Ctrl + Alt + P` | Épingle la fenêtre active au premier plan (même touche pour libérer) |
+| `Ctrl + Alt + M` | Coupe / réactive le micro (bandeau rouge tant qu'il est coupé) |
+
+Expansions de texte : `;date` et `;heure` intégrées, les autres s'ajoutent avec `exp`.  
+Notes, expansions et historique sont dans `%AppData%\horloge-ahk\`.
+
 ## Personnalisation
-Les couleurs, la largeur, la durée du fondu, la ville de la météo et la liste des serveurs se règlent en haut de `horloge.ahk`.
+Les couleurs, la largeur, la durée du fondu, la ville de la météo, la liste des serveurs, les raccourcis globaux et le nom du micro se règlent en haut de `horloge.ahk`.

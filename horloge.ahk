@@ -22,6 +22,12 @@ CoordMode("Mouse", "Screen")
 ;   Météo        météo   météo Rodez
 ;   Serveurs     statut   ping neoheberg.fr
 ;   Divers       ip   cours cac   mdp 20   #FF8800   rgb(255,136,0)   ts   ts 1732300000
+;   Notes        note acheter du café   notes (ouvre le fichier)
+;   Dev          uuid   b64 texte   b64d SGVsbG8=   sha256 texte   md5 texte   url café & thé   urld caf%C3%A9
+;   Expansions   exp ;mail moi@exemple.fr   exp ;mail (supprime)   exp (ouvre la liste)   ;date   ;heure
+;
+; RACCOURCIS GLOBAUX (Ctrl gauche + Alt gauche) : C pipette · T OCR · P épingler · M micro
+;
 ;   Autoclic     auto F6 5ms   auto F7 50ms droit x100   auto F8 10ms maintien   auto stop
 
 ; ===== Réglages =====
@@ -37,6 +43,13 @@ AUTO_RE   := "i)^\s*auto(?:\s+(.*))?$"
 METEO_VILLE := "Saint-Dié-des-Vosges"                 ; ville de la météo du panneau
 SERVERS     := ["neoheberg.fr", "dash.neoheberg.fr"]  ; sites surveillés (mettre [] pour masquer la section)
 
+; Raccourcis globaux — <^ = Ctrl gauche, <! = Alt gauche (AltGr ne les déclenche pas), "" = désactivé
+KEY_PIPETTE := "<^<!c"     ; copie la couleur sous la souris
+KEY_OCR     := "<^<!t"     ; sélection d'une zone → texte copié
+KEY_PIN     := "<^<!p"     ; garde la fenêtre active au premier plan
+KEY_MIC     := "<^<!m"     ; coupe / réactive le micro
+MIC_DEVICE  := "Microphone"  ; une partie du nom du micro (Paramètres > Son > Entrée)
+
 ; ===== État =====
 popup := 0, fading := false, fadeStart := 0, openTick := 0
 timeTxt := 0, dateTxt := 0
@@ -46,10 +59,20 @@ inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
 timerEnd := 0, timerTotal := 0, timerLabel := "", timerAt := ""
 autoCfg := 0, autoOn := false, autoStopTick := 0
 hist := [], histPos := 1
-HIST_FILE := A_AppData "\horloge-ahk\historique.txt"   ; historique conservé entre les redémarrages
+DATA_DIR   := A_AppData "\horloge-ahk"
+HIST_FILE  := DATA_DIR "\historique.txt"    ; historique conservé entre les redémarrages
+NOTES_FILE := DATA_DIR "\notes.txt"
+EXP_FILE   := DATA_DIR "\expansions.txt"
+try DirCreate(DATA_DIR)
 HIST_MAX  := 100
 
 LoadHistory()
+
+micGui := 0, pipGui := 0, expansions := Map()
+LoadExpansions()
+for k, fn in Map(KEY_PIPETTE, Pipette, KEY_OCR, OcrCapture, KEY_PIN, TogglePin, KEY_MIC, ToggleMic)
+    if (k != "")
+        try Hotkey(k, fn)
 
 weatherTxt := 0, colorSwatch := 0, srvRows := Map()
 weatherCache := "", cityCache := Map()
@@ -444,6 +467,29 @@ Interpret(s) {
     }
     if RegExMatch(s, "i)^\s*ts(?:\s+(.+?))?\s*$", &m)
         return TsInfo(m[1])
+    if RegExMatch(s, "i)^\s*note\s+(.+)$", &m) {
+        txt := Trim(m[1])
+        return {t: "Entrée : ajouter la note", c: "", run: () => AddNote(txt)}
+    }
+    if RegExMatch(s, "i)^\s*notes\s*$")
+        return {t: "Entrée : ouvrir les notes (" NotesCount() ")", c: "", run: OpenNotes}
+    if RegExMatch(s, "i)^\s*uuid\s*$")
+        return {t: "Entrée : générer un UUID", c: "", run: RunUuid}
+    if RegExMatch(s, "i)^\s*(b64d?|sha256|sha1|md5|urld?)\s+(.+)$", &m) {
+        op := StrLower(m[1]), arg := m[2]
+        out := op = "b64" ? B64Enc(arg) : op = "b64d" ? B64Dec(arg) : op = "url" ? UrlEncode(arg)
+             : op = "urld" ? UrlDecode(arg) : HashStr(arg, StrUpper(op))
+        return {t: "= " out, c: out, run: ""}
+    }
+    if RegExMatch(s, "i)^\s*exp(?:\s+(\S+)(?:\s+(.+))?)?\s*$", &m) {
+        if (m[1] = "")
+            return {t: "Entrée : ouvrir la liste des expansions (" expansions.Count ")", c: "", run: OpenExpansions}
+        ab := m[1], txt := m[2]
+        if (txt = "")
+            return {t: expansions.Has(ab) ? "Entrée : supprimer « " ab " »" : "exp " ab " <texte>", c: ""
+                  , run: () => SetExpansion(ab, "")}
+        return {t: "Entrée : « " ab " » → " txt, c: "", run: () => SetExpansion(ab, txt)}
+    }
     if (ci := ColorInfo(s))
         return ci
     if RegExMatch(s, ALARM_RE, &m) {
@@ -488,6 +534,11 @@ Submit() {
         try out := fn()
         catch as e {
             resultTxt.Value := e.Message
+            return
+        }
+        if IsObject(out) {          ; {msg} : message + saisie vidée
+            inputEdit.Value := ""
+            resultTxt.Value := out.msg
             return
         }
         if (out != "") {            ; l'action affiche un résultat : on garde la saisie
@@ -1302,6 +1353,327 @@ TsInfo(arg) {
 }
 
 N0(v) => v = "" ? 0 : Integer(v)
+
+; ================= Notes rapides =================
+AddNote(txt) {
+    try FileAppend(FormatTime(, "dd/MM/yyyy HH:mm") "  " txt "`n", NOTES_FILE, "UTF-8")
+    catch
+        return {msg: "Impossible d'écrire la note"}
+    return {msg: "Note ajoutée (" NotesCount() ")"}
+}
+
+NotesCount() {
+    if !FileExist(NOTES_FILE)
+        return 0
+    n := 0
+    for line in StrSplit(FileRead(NOTES_FILE, "UTF-8"), "`n", "`r")
+        if (Trim(line) != "")
+            n++
+    return n
+}
+
+OpenNotes(*) {
+    if !FileExist(NOTES_FILE)
+        return {msg: "Aucune note pour l'instant (note <texte>)"}
+    Run(NOTES_FILE)
+    return {msg: ""}
+}
+
+; ================= UUID / encodages / empreintes =================
+RunUuid(*) {
+    g := Buffer(16)
+    DllCall("ole32\CoCreateGuid", "Ptr", g)
+    sb := Buffer(78)
+    DllCall("ole32\StringFromGUID2", "Ptr", g, "Ptr", sb, "Int", 39)
+    id := StrLower(Trim(StrGet(sb), "{}"))
+    A_Clipboard := id
+    return id "  ·  copié"
+}
+
+Utf8Buf(str, &n) {
+    n := StrPut(str, "UTF-8") - 1
+    buf := Buffer(n + 1)
+    StrPut(str, buf, "UTF-8")
+    return buf
+}
+
+B64Enc(str) {
+    buf := Utf8Buf(str, &n)
+    if !n
+        return ""
+    sz := 0
+    DllCall("crypt32\CryptBinaryToStringW", "Ptr", buf, "UInt", n, "UInt", 0x40000001, "Ptr", 0, "UInt*", &sz)
+    out := Buffer(sz * 2)
+    DllCall("crypt32\CryptBinaryToStringW", "Ptr", buf, "UInt", n, "UInt", 0x40000001, "Ptr", out, "UInt*", &sz)
+    return StrGet(out)
+}
+
+B64Dec(str) {
+    str := Trim(str)
+    sz := 0
+    if !DllCall("crypt32\CryptStringToBinaryW", "Str", str, "UInt", 0, "UInt", 1, "Ptr", 0, "UInt*", &sz, "Ptr", 0, "Ptr", 0)
+        throw Error("base64 invalide")
+    buf := Buffer(sz + 1, 0)
+    DllCall("crypt32\CryptStringToBinaryW", "Str", str, "UInt", 0, "UInt", 1, "Ptr", buf, "UInt*", &sz, "Ptr", 0, "Ptr", 0)
+    return StrGet(buf, sz, "UTF-8")
+}
+
+HashStr(str, alg) {
+    size := alg = "MD5" ? 16 : alg = "SHA1" ? 20 : 32
+    buf := Utf8Buf(str, &n)
+    hAlg := 0
+    DllCall("bcrypt\BCryptOpenAlgorithmProvider", "Ptr*", &hAlg, "WStr", alg, "Ptr", 0, "UInt", 0)
+    digest := Buffer(size)
+    DllCall("bcrypt\BCryptHash", "Ptr", hAlg, "Ptr", 0, "UInt", 0, "Ptr", buf, "UInt", n, "Ptr", digest, "UInt", size)
+    DllCall("bcrypt\BCryptCloseAlgorithmProvider", "Ptr", hAlg, "UInt", 0)
+    out := ""
+    Loop size
+        out .= Format("{:02x}", NumGet(digest, A_Index - 1, "UChar"))
+    return out
+}
+
+UrlDecode(str) {
+    bytes := Buffer(StrPut(str, "UTF-8") * 3)
+    n := 0, i := 1, len := StrLen(str)
+    while (i <= len) {
+        ch := SubStr(str, i, 1)
+        if (ch = "%" && RegExMatch(SubStr(str, i + 1, 2), "^[0-9a-fA-F]{2}$")) {
+            NumPut("UChar", Integer("0x" SubStr(str, i + 1, 2)), bytes, n++)
+            i += 3
+            continue
+        }
+        if (ch = "+")
+            ch := " "
+        tmp := Utf8Buf(ch, &cn)
+        Loop cn
+            NumPut("UChar", NumGet(tmp, A_Index - 1, "UChar"), bytes, n++)
+        i++
+    }
+    return StrGet(bytes, n, "UTF-8")
+}
+
+; ================= Expansion de texte =================
+; exp ;mail moi@exemple.fr  →  taper ;mail n'importe où écrit l'adresse  (\n = retour à la ligne)
+LoadExpansions() {
+    global expansions
+    HotIf()
+    Hotstring(":*:;date", (*) => SendText(FormatTime(, "dd/MM/yyyy")))
+    Hotstring(":*:;heure", (*) => SendText(FormatTime(, "HH:mm")))
+    if !FileExist(EXP_FILE)
+        return
+    for line in StrSplit(FileRead(EXP_FILE, "UTF-8"), "`n", "`r") {
+        parts := StrSplit(line, "`t", , 2)
+        if (parts.Length = 2 && parts[1] != "") {
+            expansions[parts[1]] := parts[2]
+            try Hotstring(":*T:" parts[1], StrReplace(parts[2], "\n", "`n"))
+        }
+    }
+}
+
+SetExpansion(ab, txt) {
+    global expansions
+    HotIf()
+    if (txt = "") {
+        if !expansions.Has(ab)
+            return {msg: "« " ab " » n'existe pas"}
+        expansions.Delete(ab)
+        try Hotstring(":*T:" ab, , "Off")
+        msg := "« " ab " » supprimé"
+    } else {
+        expansions[ab] := txt
+        Hotstring(":*T:" ab, StrReplace(txt, "\n", "`n"), "On")
+        msg := "« " ab " » → " txt
+    }
+    out := ""
+    for k, v in expansions
+        out .= k "`t" v "`n"
+    try {
+        f := FileOpen(EXP_FILE, "w", "UTF-8")
+        f.Write(out)
+        f.Close()
+    }
+    return {msg: msg}
+}
+
+OpenExpansions(*) {
+    if !FileExist(EXP_FILE)
+        return {msg: "Aucune expansion (exp ;abc texte)"}
+    Run(EXP_FILE)
+    return {msg: ""}
+}
+
+; ================= Raccourcis globaux =================
+Tip(txt, ms := 1200) {
+    ToolTip(txt)
+    SetTimer(ClearTip, -ms)
+}
+ClearTip() => ToolTip()
+
+; Pipette : copie la couleur du pixel sous la souris
+Pipette(*) {
+    global pipGui
+    CoordMode("Pixel", "Screen")
+    MouseGetPos(&x, &y)
+    hx := SubStr(PixelGetColor(x, y), 3)
+    A_Clipboard := "#" hx
+    ClosePipette()
+    pipGui := g := Gui("+AlwaysOnTop -Caption +ToolWindow -DPIScale +E0x20")
+    g.BackColor := "1F1F1F"
+    g.MarginX := 8, g.MarginY := 6
+    g.AddText("w18 h18 Background" hx)
+    g.SetFont("s10 cFFFFFF", "Segoe UI")
+    g.AddText("x+8 yp+1", "#" hx "  copié")
+    g.Show("NA x" (x + 16) " y" (y + 16))
+    SetTimer(ClosePipette, -1200)
+}
+
+ClosePipette() {
+    global pipGui
+    if pipGui {
+        try pipGui.Destroy()
+        pipGui := 0
+    }
+}
+
+; Épingler : la fenêtre active reste au premier plan (même touche pour libérer)
+TogglePin(*) {
+    hwnd := WinExist("A")
+    if (!hwnd || WinGetClass(hwnd) ~= "^(Progman|WorkerW|Shell_TrayWnd)$")
+        return
+    WinSetAlwaysOnTop(-1, hwnd)
+    pinned := WinGetExStyle(hwnd) & 0x8
+    Tip((pinned ? "📌 Épinglée : " : "Libérée : ") SubStr(WinGetTitle(hwnd), 1, 50))
+}
+
+; Micro : coupe / réactive, avec un bandeau rouge tant qu'il est coupé
+ToggleMic(*) {
+    global micGui
+    try {
+        SoundSetMute(-1, , MIC_DEVICE)
+        muted := SoundGetMute(, MIC_DEVICE)
+    } catch {
+        Tip("Micro introuvable : change MIC_DEVICE en haut du script", 2500)
+        return
+    }
+    if micGui {
+        try micGui.Destroy()
+        micGui := 0
+    }
+    if !muted {
+        Tip("🎙 Micro réactivé")
+        return
+    }
+    micGui := Gui("+AlwaysOnTop -Caption +ToolWindow -DPIScale +E0x20")
+    micGui.BackColor := "C0392B"
+    micGui.MarginX := 14, micGui.MarginY := 6
+    micGui.SetFont("s10 cFFFFFF", "Segoe UI Semibold")
+    micGui.AddText(, "🎙  Micro coupé")
+    micGui.Show("NA Hide")
+    WinGetPos(, , &w, , micGui)
+    MonitorGetWorkArea(MonitorGetPrimary(), &l, &t, &r)
+    WinMove(l + (r - l - w) // 2, t + 10, , , micGui)
+    DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", micGui.Hwnd, "Int", 33, "Int*", 2, "Int", 4)
+    DllCall("ShowWindow", "Ptr", micGui.Hwnd, "Int", 4)     ; afficher sans voler le focus
+}
+
+; OCR : sélectionner une zone de l'écran → le texte est copié (moteur OCR intégré à Windows)
+OcrCapture(*) {
+    vx := SysGet(76), vy := SysGet(77), vw := SysGet(78), vh := SysGet(79)
+    ov := Gui("+AlwaysOnTop -Caption +ToolWindow -DPIScale")
+    ov.BackColor := "000000"
+    ov.Show("x" vx " y" vy " w" vw " h" vh)
+    WinSetTransparent(60, ov)
+    box := Gui("+AlwaysOnTop -Caption +ToolWindow -DPIScale +Owner" ov.Hwnd)
+    box.BackColor := C_TODAY
+    Tip("Sélectionne une zone (Échap pour annuler)", 3000)
+
+    ; attendre le clic
+    Loop {
+        if GetKeyState("Escape", "P") {
+            ov.Destroy(), box.Destroy(), ToolTip()
+            return
+        }
+        if GetKeyState("LButton", "P")
+            break
+        Sleep(10)
+    }
+    ToolTip()
+    MouseGetPos(&x1, &y1)
+    x := x1, y := y1, w := 0, h := 0
+    ; suivre le glisser
+    while GetKeyState("LButton", "P") {
+        if GetKeyState("Escape", "P") {
+            ov.Destroy(), box.Destroy()
+            return
+        }
+        MouseGetPos(&x2, &y2)
+        x := Min(x1, x2), y := Min(y1, y2), w := Abs(x2 - x1), h := Abs(y2 - y1)
+        if (w > 1 && h > 1) {
+            box.Show("NA x" x " y" y " w" w " h" h)
+            WinSetTransparent(90, box)
+        }
+        Sleep(10)
+    }
+    ov.Destroy(), box.Destroy()
+    if (w < 6 || h < 6)
+        return
+    Sleep(120)       ; laisser l'écran se redessiner sans le voile
+    Tip("Lecture du texte…", 10000)
+    txt := RunOcr(x, y, w, h)
+    if (txt = "") {
+        Tip("Aucun texte détecté")
+        return
+    }
+    A_Clipboard := txt
+    Tip("Texte copié (" StrLen(txt) " caractères)")
+}
+
+RunOcr(x, y, w, h) {
+    ps1 := A_Temp "\horloge_ocr.ps1", out := A_Temp "\horloge_ocr.txt"
+    script := '
+    (
+param([int]$x, [int]$y, [int]$w, [int]$h, [string]$out)
+Add-Type -AssemblyName System.Drawing
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+Add-Type -TypeDefinition "using System.Runtime.InteropServices; public class HDpi { [DllImport(""user32.dll"")] public static extern bool SetProcessDPIAware(); }"
+[HDpi]::SetProcessDPIAware() | Out-Null
+$bmp = New-Object System.Drawing.Bitmap $w, $h
+$g = [System.Drawing.Graphics]::FromImage($bmp)
+$g.CopyFromScreen($x, $y, 0, 0, $bmp.Size)
+$big = New-Object System.Drawing.Bitmap ($w * 2), ($h * 2)
+$g2 = [System.Drawing.Graphics]::FromImage($big)
+$g2.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::HighQualityBicubic
+$g2.DrawImage($bmp, 0, 0, ($w * 2), ($h * 2))
+$png = Join-Path $env:TEMP "horloge_ocr.png"
+$big.Save($png, [System.Drawing.Imaging.ImageFormat]::Png)
+$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq "AsTask" -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -like "IAsyncOperation*" -and $_.GetParameters()[0].ParameterType.Name -notlike "*Progress*" } | Select-Object -First 1
+function Await($op, [Type]$t) { $task = $asTask.MakeGenericMethod($t).Invoke($null, @($op)); $task.Wait() | Out-Null; $task.Result }
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics, ContentType = WindowsRuntime]
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($png)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$sbmp = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+$text = ""
+if ($engine) {
+  $res = Await ($engine.RecognizeAsync($sbmp)) ([Windows.Media.Ocr.OcrResult])
+  $text = ($res.Lines | ForEach-Object { $_.Text }) -join [Environment]::NewLine
+}
+$stream.Dispose()
+[IO.File]::WriteAllText($out, $text, (New-Object System.Text.UTF8Encoding $false))
+    )'
+    try {
+        f := FileOpen(ps1, "w", "UTF-8")
+        f.Write(script)
+        f.Close()
+        try FileDelete(out)
+        RunWait('powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "' ps1 '" ' x ' ' y ' ' w ' ' h ' "' out '"', , "Hide")
+        return FileExist(out) ? Trim(FileRead(out, "UTF-8"), " `r`n") : ""
+    }
+    return ""
+}
 
 ; ================= Moteur de calcul =================
 Qty(v, d := "", u := "", pct := false) => {v: v, d: d, u: u, pct: pct}
