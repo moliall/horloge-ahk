@@ -28,6 +28,9 @@ CoordMode("Mouse", "Screen")
 ;
 ; RACCOURCIS GLOBAUX (Ctrl gauche + Alt gauche) : C pipette · T OCR · P épingler · M micro
 ;
+;   Réglages     dev (ouvre le mode dev : couleurs, sections, outils, infos)
+;   Dernier résultat : ans (ex. ans / 12) — après Entrée, la saisie est sélectionnée (taper ou coller la remplace)
+;
 ;   Autoclic     auto F6 5ms   auto F7 50ms droit x100   auto F8 10ms maintien   auto stop
 
 ; ===== Réglages =====
@@ -50,6 +53,43 @@ KEY_PIN     := "<^<!p"     ; garde la fenêtre active au premier plan
 KEY_MIC     := "<^<!m"     ; coupe / réactive le micro
 MIC_DEVICE  := "Microphone"  ; une partie du nom du micro (Paramètres > Son > Entrée)
 
+; Sections et outils (modifiables aussi depuis le mode dev : tape "dev" dans la saisie)
+CLOCK_SIZE        := 36
+SHOW_SECONDS      := true
+SHOW_WEATHER      := true
+SHOW_CALENDAR     := true
+SHOW_SERVERS      := true
+ENABLE_EXPANSIONS := true
+ENABLE_AUTOCLICK  := true
+ENABLE_CURRENCY   := true
+HIST_MAX          := 100
+
+; Réglages exposés dans le mode dev : [onglet, variable, type, libellé]
+CFG_SCHEMA := [
+    ["Apparence", "C_BG",              "color", "Fond du panneau"],
+    ["Apparence", "C_ACCENT",          "color", "Dates sélectionnées"],
+    ["Apparence", "C_RANGE",           "color", "Jours entre deux dates"],
+    ["Apparence", "C_TODAY",           "color", "Jour actuel / lignes d'état"],
+    ["Apparence", "PANEL_W",           "int",   "Largeur du contenu (px)"],
+    ["Apparence", "CLOCK_SIZE",        "int",   "Taille de l'heure"],
+    ["Apparence", "FADE_MS",           "int",   "Durée du fondu (ms, 0 = aucun)"],
+    ["Apparence", "SHOW_SECONDS",      "bool",  "Afficher les secondes"],
+    ["Sections",  "SHOW_WEATHER",      "bool",  "Météo sous la date"],
+    ["Sections",  "SHOW_CALENDAR",     "bool",  "Calendrier"],
+    ["Sections",  "SHOW_SERVERS",      "bool",  "Statut des serveurs"],
+    ["Outils",    "KEY_PIPETTE",       "text",  "Pipette (vide = désactivé)"],
+    ["Outils",    "KEY_OCR",           "text",  "OCR"],
+    ["Outils",    "KEY_PIN",           "text",  "Épingler une fenêtre"],
+    ["Outils",    "KEY_MIC",           "text",  "Couper le micro"],
+    ["Outils",    "ENABLE_EXPANSIONS", "bool",  "Expansions de texte"],
+    ["Outils",    "ENABLE_AUTOCLICK",  "bool",  "Autoclic"],
+    ["Outils",    "ENABLE_CURRENCY",   "bool",  "Taux de change (devises)"],
+    ["Données",   "METEO_VILLE",       "text",  "Ville de la météo"],
+    ["Données",   "SERVERS",           "list",  "Serveurs (séparés par des virgules)"],
+    ["Données",   "MIC_DEVICE",        "text",  "Nom du micro"],
+    ["Données",   "HIST_MAX",          "int",   "Taille de l'historique"]
+]
+
 ; ===== État =====
 popup := 0, fading := false, fadeStart := 0, openTick := 0
 timeTxt := 0, dateTxt := 0
@@ -64,12 +104,27 @@ HIST_FILE  := DATA_DIR "\historique.txt"    ; historique conservé entre les red
 NOTES_FILE := DATA_DIR "\notes.txt"
 EXP_FILE   := DATA_DIR "\expansions.txt"
 try DirCreate(DATA_DIR)
-HIST_MAX  := 100
+CFG_FILE   := DATA_DIR "\config.ini"
+
+; Chargement des réglages du mode dev (config.ini remplace les valeurs ci-dessus)
+CFG := Map(), CFG_DEFAULTS := Map()
+for cfgIt in CFG_SCHEMA {
+    cfgKey := cfgIt[2]
+    CFG_DEFAULTS[cfgKey] := CfgFormat(cfgIt[3], %cfgKey%)
+    cfgRaw := IniRead(CFG_FILE, "config", cfgKey, "`n")
+    if (cfgRaw != "`n")
+        try %cfgKey% := CfgParse(cfgIt[3], cfgRaw)
+    CFG[cfgKey] := CfgFormat(cfgIt[3], %cfgKey%)
+}
+lastAns := "", devGui := 0
+A_TrayMenu.Add()
+A_TrayMenu.Add("Mode dev", (*) => OpenDev())
 
 LoadHistory()
 
 micGui := 0, pipGui := 0, expansions := Map()
-LoadExpansions()
+if ENABLE_EXPANSIONS
+    LoadExpansions()
 for k, fn in Map(KEY_PIPETTE, Pipette, KEY_OCR, OcrCapture, KEY_PIN, TogglePin, KEY_MIC, ToggleMic)
     if (k != "")
         try Hotkey(k, fn)
@@ -79,12 +134,18 @@ weatherCache := "", cityCache := Map()
 srvState := Map(), srvLastCheck := 0, srvPending := 0
 httpPending := []
 
-SetTimer(() => LoadRates(), -100)            ; taux de change au démarrage
-SetTimer(LoadRates, 6 * 3600 * 1000)         ; puis toutes les 6 h
-SetTimer(() => UpdatePanelWeather(), -300)   ; météo au démarrage
-SetTimer(UpdatePanelWeather, 15 * 60 * 1000) ; puis toutes les 15 min
-SetTimer(() => CheckServers(), -500)         ; statut des serveurs au démarrage
-SetTimer(CheckServers, 2 * 60 * 1000)        ; puis toutes les 2 min
+if ENABLE_CURRENCY {
+    SetTimer(() => LoadRates(), -100)            ; taux de change au démarrage
+    SetTimer(LoadRates, 6 * 3600 * 1000)         ; puis toutes les 6 h
+}
+if SHOW_WEATHER {
+    SetTimer(() => UpdatePanelWeather(), -300)   ; météo au démarrage
+    SetTimer(UpdatePanelWeather, 15 * 60 * 1000) ; puis toutes les 15 min
+}
+if (SHOW_SERVERS && SERVERS.Length) {
+    SetTimer(() => CheckServers(), -500)         ; statut des serveurs au démarrage
+    SetTimer(CheckServers, 2 * 60 * 1000)        ; puis toutes les 2 min
+}
 
 #n:: {
     Send("{Blind}{vkE8}")   ; empêche le menu Démarrer de s'ouvrir au relâchement de Win
@@ -129,20 +190,26 @@ BuildGui() {
     popup.MarginY := 16
 
     ; Heure + date
-    popup.SetFont("s36 cFFFFFF", "Segoe UI Semibold")
+    popup.SetFont("s" CLOCK_SIZE " cFFFFFF", "Segoe UI Semibold")
     timeTxt := popup.AddText("xm w" PANEL_W " Center")
     popup.SetFont("s12 cB0B0B0", "Segoe UI")
     dateTxt := popup.AddText("xm y+0 w" PANEL_W " Center")
-    popup.SetFont("s10 c9A9A9A", "Segoe UI")
-    weatherTxt := popup.AddText("xm y+4 w" PANEL_W " Center")
+    weatherTxt := 0
+    if SHOW_WEATHER {
+        popup.SetFont("s10 c9A9A9A", "Segoe UI")
+        weatherTxt := popup.AddText("xm y+4 w" PANEL_W " Center")
+    }
 
     Separator()
 
+    calCells := [], cellDates := [], cellKeys := []
+    if SHOW_CALENDAR {
+    cw := PANEL_W // 7
     ; Calendrier : en-tête
     popup.SetFont("s11 cFFFFFF", "Segoe UI Semibold")
-    prev := popup.AddText("xm y+8 w40 h28 Center +0x200", "‹")
-    calTitle := popup.AddText("x+0 yp w200 h28 Center +0x200")
-    next := popup.AddText("x+0 yp w40 h28 Center +0x200", "›")
+    prev := popup.AddText("xm y+8 w" cw " h28 Center +0x200", "‹")
+    calTitle := popup.AddText("x+0 yp w" (PANEL_W - 2 * cw) " h28 Center +0x200")
+    next := popup.AddText("x+0 yp w" cw " h28 Center +0x200", "›")
     for ev in ["Click", "DoubleClick"] {
         prev.OnEvent(ev, (*) => ChangeMonth(-1))
         next.OnEvent(ev, (*) => ChangeMonth(1))
@@ -151,14 +218,13 @@ BuildGui() {
 
     popup.SetFont("s9 c8A8A8A", "Segoe UI")
     for i, j in ["lu", "ma", "me", "je", "ve", "sa", "di"]
-        popup.AddText((i = 1 ? "xm y+4" : "x+0 yp") " w40 h20 Center", j)
+        popup.AddText((i = 1 ? "xm y+4" : "x+0 yp") " w" cw " h20 Center", j)
 
     ; Grille 6 x 7
     popup.SetFont("s10 cE0E0E0", "Segoe UI")
-    calCells := [], cellDates := [], cellKeys := []
     Loop 42 {
         opt := Mod(A_Index - 1, 7) = 0 ? "xm y+" (A_Index = 1 ? 2 : 0) : "x+0 yp"
-        ctl := popup.AddText(opt " w40 h28 Center +0x200 Background" C_BG)
+        ctl := popup.AddText(opt " w" cw " h28 Center +0x200 Background" C_BG)
         ctl.OnEvent("Click", CellClick.Bind(A_Index))
         ctl.OnEvent("DoubleClick", CellClick.Bind(A_Index))
         calCells.Push(ctl), cellDates.Push(""), cellKeys.Push("")
@@ -168,15 +234,16 @@ BuildGui() {
     calResult.OnEvent("Click", (*) => ClearSel())
 
     Separator()
+    }
 
     ; Statut des serveurs (clic = ouvrir le site)
     srvRows := Map()
-    if SERVERS.Length {
+    if (SHOW_SERVERS && SERVERS.Length) {
         for idx, host in SERVERS {
             popup.SetFont("s10 c6A6A6A", "Segoe UI")
             dot := popup.AddText("xm y+" (idx = 1 ? 10 : 2) " w16 h20 +0x200", "●")
             popup.SetFont("s10 cE0E0E0", "Segoe UI")
-            name := popup.AddText("x+4 yp w180 h20 +0x200", host)
+            name := popup.AddText("x+4 yp w" (PANEL_W - 100) " h20 +0x200", host)
             popup.SetFont("s10 c9A9A9A", "Segoe UI")
             ms := popup.AddText("x+0 yp w80 h20 +0x200 Right")
             for ctl in [dot, name, ms]
@@ -266,7 +333,7 @@ OpenPopup() {
 
 FadeStep() {
     global popup, fadeStart
-    k := (A_TickCount - fadeStart) / FADE_MS
+    k := FADE_MS > 0 ? (A_TickCount - fadeStart) / FADE_MS : 1
     if (!popup || k >= 1) {
         StopFade()
         if popup
@@ -325,14 +392,14 @@ UpdateClock() {
     global popup, timeTxt, dateTxt
     if !popup
         return
-    SetIfChanged(timeTxt, FormatTime(, "HH:mm:ss"))
+    SetIfChanged(timeTxt, FormatTime(, SHOW_SECONDS ? "HH:mm:ss" : "HH:mm"))
     SetIfChanged(dateTxt, Capitalize(FormatTime(, "dddd d MMMM yyyy")))
 }
 
 ; ================= Calendrier =================
 RenderCalendar() {
     global popup, calTitle, calCells, cellDates, cellKeys, calY, calM, selA, selB
-    if !popup
+    if (!popup || !calCells.Length)
         return
     first := Format("{:04}{:02}01", calY, calM)
     offset := Mod(Integer(FormatTime(first, "WDay")) + 5, 7)   ; lundi = 0
@@ -431,6 +498,12 @@ Plural(n, word) => n " " word (Abs(n) > 1 ? "s" : "")
 ; ================= Saisie multifonction =================
 ; Renvoie {t: aperçu, c: texte à copier, run: action à lancer sur Entrée} ou ""
 Interpret(s) {
+    if RegExMatch(s, "i)^\s*(?:dev|config|réglages)\s*$")
+        return {t: "Entrée : ouvrir le mode dev", c: "", run: OpenDev}
+    if (!ENABLE_AUTOCLICK && RegExMatch(s, AUTO_RE))
+        return {t: "Autoclic désactivé (mode dev)", c: "", run: ""}
+    if (!ENABLE_EXPANSIONS && RegExMatch(s, "i)^\s*exp\b"))
+        return {t: "Expansions désactivées (mode dev)", c: "", run: ""}
     if RegExMatch(s, AUTO_RE, &m) {
         cfg := ParseAuto(m[1])
         if !IsObject(cfg)
@@ -500,7 +573,7 @@ Interpret(s) {
     r := Evaluate(s)
     if !IsObject(r)
         return ""
-    return {t: "= " r.t, c: r.c, run: ""}
+    return {t: "= " r.t, c: r.c, run: "", q: r.HasOwnProp("q") ? r.q : ""}
 }
 
 Preview() {
@@ -518,7 +591,7 @@ Preview() {
 }
 
 Submit() {
-    global inputEdit, resultTxt
+    global popup, inputEdit, resultTxt, lastAns
     s := inputEdit.Value
     try res := Interpret(s)
     catch as e {
@@ -533,24 +606,39 @@ Submit() {
         out := ""
         try out := fn()
         catch as e {
-            resultTxt.Value := e.Message
+            if popup
+                resultTxt.Value := e.Message
             return
         }
+        if !popup                   ; l'action a fermé le panneau (ex. mode dev)
+            return
         if IsObject(out) {          ; {msg} : message + saisie vidée
             inputEdit.Value := ""
             resultTxt.Value := out.msg
             return
         }
-        if (out != "") {            ; l'action affiche un résultat : on garde la saisie
+        if (out != "") {            ; l'action affiche un résultat : on garde la saisie (sélectionnée)
             resultTxt.Value := out
+            SelectAllInput()
             return
         }
         inputEdit.Value := ""
         resultTxt.Value := ""
         return
     }
+    if (res.c = "")
+        return
     A_Clipboard := StrReplace(res.c, Chr(0xA0), "")
     resultTxt.Value := res.t "  ·  copié"
+    if (res.HasOwnProp("q") && IsObject(res.q))
+        lastAns := res.q
+    SelectAllInput()
+}
+
+; Tout sélectionner : taper ou coller remplace, une flèche ou un clic désélectionne
+SelectAllInput() {
+    global inputEdit
+    SendMessage(0xB1, 0, -1, inputEdit)      ; EM_SETSEL
 }
 
 HistPush(s) {
@@ -619,7 +707,7 @@ Evaluate(raw) {
         throw e
     }
     if IsObject(dateRes)
-        return {t: calcRes.t "  ·  " dateRes.short, c: calcRes.c}
+        return {t: calcRes.t "  ·  " dateRes.short, c: calcRes.c, q: calcRes.q}
     return calcRes
 }
 
@@ -634,7 +722,7 @@ EvalCalc(s) {
             other := Qty(r.v / (1 + rate / 100), r.d, r.u), lbl := "HT"
         main := FmtValue(other)
         tva := FmtValue(Qty(Abs(other.v - r.v), r.d, r.u))
-        return {t: lbl " " main "  ·  TVA " tva " (" FmtNum(rate) " %)", c: main}
+        return {t: lbl " " main "  ·  TVA " tva " (" FmtNum(rate) " %)", c: main, q: other}
     }
 
     ; Conversion "... en X"
@@ -646,16 +734,16 @@ EvalCalc(s) {
         lt := StrLower(tgt)
         if (lt = "hex" || lt = "bin" || lt = "oct" || lt = "dec") {
             out := ToBase(r, lt)
-            return {t: out, c: out}
+            return {t: out, c: out, q: r}
         }
         u := Calc.Unit(tgt)
         if (!u || u.d != r.d)
             throw Error("conversion impossible")
         out := u.d = "cur" ? FmtMoney(r.v / u.f) " " u.n : FmtNum(r.v / u.f) " " tgt
-        return {t: out, c: out}
+        return {t: out, c: out, q: r}
     }
     out := FmtValue(r)
-    return {t: out, c: out}
+    return {t: out, c: out, q: r}
 }
 
 ; 25/12 · auj + 45j · demain + 2 sem · 25/12 - 01/11
@@ -1146,7 +1234,7 @@ PanelWeatherCb(txt, name) {
 
 RefreshWeatherUI() {
     global popup, weatherTxt, weatherCache
-    if popup
+    if (popup && weatherTxt)
         SetIfChanged(weatherTxt, weatherCache)
 }
 
@@ -1918,6 +2006,11 @@ class Calc {
             name := StrLower(p.v)
             if (name = "pi")
                 return Qty(3.141592653589793)
+            if (name = "ans") {
+                if !IsObject(lastAns)
+                    throw Error("pas encore de résultat")
+                return Qty(lastAns.v, lastAns.d, lastAns.u, lastAns.pct)
+            }
             if (name = "sqrt" || name = "racine") {
                 a := this.Primary()
                 if (a.d != "" || a.v < 0)
@@ -2027,4 +2120,160 @@ Capitalize(t) => StrUpper(SubStr(t, 1, 1)) SubStr(t, 2)
 SetIfChanged(ctl, val) {
     if (ctl.Value != val)
         ctl.Value := val
+}
+
+; ================= Mode dev (réglages) =================
+CfgParse(kind, raw) {
+    if (kind = "bool")
+        return raw = "1"
+    if (kind = "int")
+        return Integer(raw)
+    if (kind = "list") {
+        arr := []
+        for v in StrSplit(raw, ",", " `t")
+            if (v != "")
+                arr.Push(v)
+        return arr
+    }
+    return raw
+}
+
+CfgFormat(kind, val) {
+    if (kind = "bool")
+        return val ? "1" : "0"
+    if (kind = "list") {
+        out := ""
+        for v in val
+            out .= (out = "" ? "" : ", ") v
+        return out
+    }
+    return String(val)
+}
+
+OpenDev(*) {
+    global devGui
+    ClosePopup()
+    if devGui {
+        WinActivate(devGui)
+        return {msg: ""}
+    }
+    devGui := Gui("+AlwaysOnTop +OwnDialogs", "horloge-ahk · mode dev")
+    devGui.SetFont("s10", "Segoe UI")
+    devGui.MarginX := 12, devGui.MarginY := 12
+    tabNames := ["Apparence", "Sections", "Outils", "Données", "Infos"]
+    tab := devGui.AddTab3("w500 h360", tabNames)
+    ctrls := Map()
+    for tname in tabNames {
+        if (tname = "Infos")
+            continue
+        tab.UseTab(tname)
+        first := true
+        for it in CFG_SCHEMA {
+            if (it[1] != tname)
+                continue
+            key := it[2], kind := it[3], label := it[4], cur := CFG[key]
+            opt := first ? "x32 y52" : "x32 y+12"
+            if (kind = "bool") {
+                ctl := devGui.AddCheckbox(opt " w440" (cur = "1" ? " Checked" : ""), label)
+            } else {
+                devGui.AddText(opt " w220", label)
+                ctl := devGui.AddEdit("x+8 yp-3 w" (kind = "color" ? 150 : 200), cur)
+                if (kind = "color") {
+                    sw := devGui.AddText("x+8 yp+2 w22 h22 Border Background" cur)
+                    ctl.OnEvent("Change", DevSwatch.Bind(sw))
+                }
+            }
+            ctrls[key] := {ctl: ctl, kind: kind}
+            first := false
+        }
+    }
+    tab.UseTab("Infos")
+    infoTxt := devGui.AddText("x32 y52 w460 h250", DevInfo())
+    devGui.AddButton("x32 y+8 w120", "Actualiser").OnEvent("Click", (*) => infoTxt.Value := DevInfo())
+    tab.UseTab()
+
+    devGui.AddButton("xm y+14 w190 Default", "Enregistrer et recharger").OnEvent("Click", (*) => DevSave(ctrls))
+    devGui.AddButton("x+8 w150", "Valeurs par défaut").OnEvent("Click", (*) => DevDefaults(ctrls))
+    devGui.AddButton("x+8 w144", "Fermer").OnEvent("Click", (*) => DevClose())
+    devGui.AddButton("xm y+8 w190", "Dossier des données").OnEvent("Click", (*) => Run(DATA_DIR))
+    devGui.AddButton("x+8 w150", "Éditer le script").OnEvent("Click", (*) => Edit())
+    devGui.AddButton("x+8 w144", "Recharger").OnEvent("Click", (*) => Reload())
+    devGui.OnEvent("Close", (*) => DevClose())
+    devGui.OnEvent("Escape", (*) => DevClose())
+    devGui.Show()
+    return {msg: ""}
+}
+
+DevSwatch(sw, ctl, *) {
+    v := Trim(ctl.Value, "# ")
+    if (v ~= "^[0-9a-fA-F]{6}$") {
+        sw.Opt("Background" v)
+        sw.Redraw()
+    }
+}
+
+DevSave(ctrls) {
+    global devGui
+    vals := Map()
+    for key, o in ctrls {
+        raw := o.kind = "bool" ? (o.ctl.Value ? "1" : "0") : Trim(o.ctl.Value)
+        if (o.kind = "color") {
+            raw := Trim(raw, "# ")
+            if !(raw ~= "^[0-9a-fA-F]{6}$") {
+                MsgBox("Couleur invalide pour " key " : « " raw " » (format attendu : 1F1F1F)", "Mode dev", 48)
+                return
+            }
+        }
+        if (o.kind = "int" && !(raw ~= "^\d+$")) {
+            MsgBox("Nombre entier attendu pour " key " : « " raw " »", "Mode dev", 48)
+            return
+        }
+        vals[key] := raw
+    }
+    try {
+        for key, raw in vals
+            IniWrite(raw, CFG_FILE, "config", key)
+    } catch as e {
+        MsgBox("Impossible d'enregistrer : " e.Message, "Mode dev", 16)
+        return
+    }
+    Reload()
+}
+
+DevDefaults(ctrls) {
+    for key, o in ctrls {
+        def := CFG_DEFAULTS[key]
+        if (o.kind = "bool")
+            o.ctl.Value := def = "1"
+        else
+            o.ctl.Value := def
+    }
+}
+
+DevClose() {
+    global devGui
+    if devGui {
+        try devGui.Destroy()
+        devGui := 0
+    }
+}
+
+DevInfo() {
+    rates := 0
+    for name, u in Calc.Units
+        if (u.d = "cur" && name = StrLower(u.n))
+            rates++
+    return "AutoHotkey " A_AhkVersion
+        . "`nScript : " A_ScriptFullPath
+        . "`nDonnées : " DATA_DIR
+        . "`n`nHistorique : " hist.Length " saisies"
+        . "`nNotes : " NotesCount()
+        . "`nExpansions : " expansions.Count
+        . "`nDevises chargées : " rates
+        . "`nMétéo : " (weatherCache != "" ? weatherCache : "non chargée")
+        . "`nServeurs : " (SERVERS.Length ? ServerSummary() : "aucun")
+        . "`nRequêtes web en cours : " httpPending.Length
+        . "`nDernier résultat (ans) : " (IsObject(lastAns) ? FmtValue(lastAns) : "—")
+        . "`nMinuteur : " (timerEnd ? FormatDuration(Ceil((timerEnd - A_TickCount) / 1000)) : "aucun")
+        . "`nAutoclic : " (autoCfg ? DescribeAuto(autoCfg) (autoOn ? " (actif)" : "") : "aucun")
 }

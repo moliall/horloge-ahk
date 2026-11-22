@@ -23,7 +23,7 @@ Petit panneau pour Windows 11 qui remplace le centre de notifications (Win + N) 
 - Molette : change de mois (haut = mois suivant) — clic sur le nom du mois : revient à aujourd'hui
 
 ### Saisie multifonction
-Entrée sur un calcul copie le résultat. Flèches haut/bas : historique (conservé entre les redémarrages dans `%AppData%\horloge-ahk\historique.txt`).
+Entrée sur un calcul copie le résultat et sélectionne la saisie (taper ou coller la remplace). `ans` = dernier résultat (ex. `ans / 12`). Flèches haut/bas : historique (conservé entre les redémarrages dans `%AppData%\horloge-ahk\historique.txt`).
 
 | Fonction | Exemples |
 |---|---|
@@ -62,6 +62,16 @@ Les taux de change viennent de [open.er-api.com](https://open.er-api.com) (mis �
 
 Expansions de texte : `;date` et `;heure` intégrées, les autres s'ajoutent avec `exp`.  
 Notes, expansions et historique sont dans `%AppData%\horloge-ahk\`.
+
+## Mode dev
+Taper `dev` dans la saisie (ou clic droit sur l'icône H → Mode dev) ouvre une fenêtre de réglages :
+- **Apparence** : couleurs, largeur, taille de l'heure, fondu, secondes
+- **Sections** : afficher / masquer météo, calendrier, serveurs
+- **Outils** : touches des raccourcis globaux, activer / désactiver expansions, autoclic, devises
+- **Données** : ville météo, serveurs, micro, taille de l'historique
+- **Infos** : état du script (historique, devises chargées, requêtes en cours, minuteur…)
+
+Les réglages sont enregistrés dans `%AppData%\horloge-ahk\config.ini`.
 
 ## Personnalisation
 Les couleurs, la largeur, la durée du fondu, la ville de la météo, la liste des serveurs, les raccourcis globaux et le nom du micro se règlent en haut de `horloge.ahk`.
