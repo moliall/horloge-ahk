@@ -37,7 +37,7 @@ popup := 0, fading := false, fadeStart := 0
 timeTxt := 0, dateTxt := 0
 calTitle := 0, calCells := [], cellDates := [], cellKeys := [], calResult := 0
 calY := 0, calM := 0, selA := "", selB := ""
-inputBox := 0, inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
+fieldBg := 0, inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
 timerEnd := 0, timerTotal := 0, timerLabel := "", timerAt := ""
 autoCfg := 0, autoOn := false
 hist := [], histPos := 1
@@ -67,7 +67,7 @@ TogglePopup() {
 ; ================= Construction =================
 BuildGui() {
     global popup, timeTxt, dateTxt, calTitle, calCells, cellDates, cellKeys, calResult
-    global calY, calM, selA, selB, inputBox, inputEdit, resultTxt, timerTxt, autoTxt
+    global calY, calM, selA, selB, fieldBg, inputEdit, resultTxt, timerTxt, autoTxt
     global hist, histPos
 
     popup := Gui("+AlwaysOnTop -Caption +ToolWindow")
@@ -115,11 +115,11 @@ BuildGui() {
     Separator()
 
     ; Saisie : un fond + le champ centré verticalement dedans
-    inputBox := popup.AddText("xm y+12 w" PANEL_W " h36 Background2A2A2A +0x4000000")
+    fieldBg := popup.AddText("xm y+12 w" PANEL_W " h36 Background2A2A2A +0x4000000")
     popup.SetFont("s12 cFFFFFF", "Segoe UI")
     inputEdit := popup.AddEdit("xp+10 yp w" (PANEL_W - 20) " -E0x200 Background2A2A2A")
     inputEdit.GetPos(, , , &eh)
-    inputBox.GetPos(, &by, , &bh)
+    fieldBg.GetPos(, &by, , &bh)
     inputEdit.Move(, by + (bh - eh) // 2)
     inputEdit.OnEvent("Change", (*) => Preview())
 
