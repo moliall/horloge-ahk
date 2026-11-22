@@ -47,8 +47,16 @@ SetTimer(LoadRates, 6 * 3600 * 1000)     ; puis toutes les 6 h
 
 #n:: {
     Send("{Blind}{vkE8}")   ; empêche le menu Démarrer de s'ouvrir au relâchement de Win
+    if StartMenuOpen() {    ; menu Démarrer / recherche déjà ouvert : on le ferme, sinon il garde le focus
+        Send("{Esc}")
+        Sleep(60)
+    }
     TogglePopup()
 }
+
+StartMenuOpen() => WinActive("ahk_exe StartMenuExperienceHost.exe")
+                || WinActive("ahk_exe SearchHost.exe")
+                || WinActive("ahk_exe SearchApp.exe")
 
 #HotIf popup && WinActive(popup)
 Enter::Submit()
@@ -710,6 +718,7 @@ DescribeAuto(cfg) {
 AutoSetup(cfg) {
     global autoCfg
     AutoRemove()
+    HotIf()          ; raccourci global (sinon il hérite du contexte "panneau actif" de la touche Entrée)
     if cfg.hold {
         Hotkey("*" cfg.key, AutoHoldDown, "On")
         Hotkey("*" cfg.key " up", AutoHoldUp, "On")
@@ -723,6 +732,7 @@ AutoRemove(*) {
     global autoCfg, autoOn
     autoOn := false
     if autoCfg {
+        HotIf()
         try Hotkey("*" autoCfg.key, "Off")
         try Hotkey("*" autoCfg.key " up", "Off")
         autoCfg := 0
