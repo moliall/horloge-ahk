@@ -33,27 +33,31 @@ ALARM_RE  := "^\s*@\s*(\d{1,2})(?:[h:](\d{2})?)?\s*(.*)$"
 AUTO_RE   := "i)^\s*auto(?:\s+(.*))?$"
 
 ; ===== État =====
-popup := 0, fading := false, fadeStart := 0
+popup := 0, fading := false, fadeStart := 0, openTick := 0
 timeTxt := 0, dateTxt := 0
 calTitle := 0, calCells := [], cellDates := [], cellKeys := [], calResult := 0
 calY := 0, calM := 0, selA := "", selB := ""
-fieldBg := 0, inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
+inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
 timerEnd := 0, timerTotal := 0, timerLabel := "", timerAt := ""
-autoCfg := 0, autoOn := false
+autoCfg := 0, autoOn := false, autoStopTick := 0
 hist := [], histPos := 1
 
 SetTimer(() => LoadRates(), -100)        ; taux de change au démarrage
 SetTimer(LoadRates, 6 * 3600 * 1000)     ; puis toutes les 6 h
 
-#n::TogglePopup()
+#n:: {
+    Send("{Blind}{vkE8}")   ; empêche le menu Démarrer de s'ouvrir au relâchement de Win
+    TogglePopup()
+}
 
 #HotIf popup && WinActive(popup)
 Enter::Submit()
 NumpadEnter::Submit()
 Up::HistNav(-1)
 Down::HistNav(1)
-WheelUp::ChangeMonth(-1)
-WheelDown::ChangeMonth(1)
+Escape::ClosePopup()
+WheelUp::ChangeMonth(1)
+WheelDown::ChangeMonth(-1)
 #HotIf
 
 TogglePopup() {
@@ -67,7 +71,7 @@ TogglePopup() {
 ; ================= Construction =================
 BuildGui() {
     global popup, timeTxt, dateTxt, calTitle, calCells, cellDates, cellKeys, calResult
-    global calY, calM, selA, selB, fieldBg, inputEdit, resultTxt, timerTxt, autoTxt
+    global calY, calM, selA, selB, inputEdit, resultTxt, timerTxt, autoTxt
     global hist, histPos
 
     popup := Gui("+AlwaysOnTop -Caption +ToolWindow")
@@ -114,17 +118,14 @@ BuildGui() {
 
     Separator()
 
-    ; Saisie : un fond + le champ centré verticalement dedans
-    fieldBg := popup.AddText("xm y+12 w" PANEL_W " h36 Background2A2A2A +0x4000000")
+    ; Saisie : champ "multi-ligne" utilisé sur une ligne, pour pouvoir centrer le texte verticalement
     popup.SetFont("s12 cFFFFFF", "Segoe UI")
-    inputEdit := popup.AddEdit("xp+10 yp w" (PANEL_W - 20) " -E0x200 Background2A2A2A")
-    inputEdit.GetPos(, , , &eh)
-    fieldBg.GetPos(, &by, , &bh)
-    inputEdit.Move(, by + (bh - eh) // 2)
+    inputEdit := popup.AddEdit("xm y+12 w" PANEL_W " h36 -E0x200 +Multi -VScroll -HScroll -Wrap Background2A2A2A")
     inputEdit.OnEvent("Change", (*) => Preview())
+    CenterEditText(inputEdit, 10)
 
     popup.SetFont("s10 c9A9A9A", "Segoe UI")
-    resultTxt := popup.AddText("xm y" (by + bh + 6) " w" PANEL_W " Right")
+    resultTxt := popup.AddText("xm y+6 w" PANEL_W " Right")
     timerTxt := popup.AddText("xm y+4 w" PANEL_W " c" C_TODAY)
     timerTxt.OnEvent("Click", (*) => StopTimer())
     autoTxt := popup.AddText("xm y+2 w" PANEL_W " c" C_TODAY)
@@ -144,6 +145,24 @@ BuildGui() {
     RefreshAutoUI()
 }
 
+; Centre le texte d'un Edit multi-ligne (EM_SETRECT) avec une marge horizontale
+CenterEditText(ctl, padX) {
+    hFont := SendMessage(0x31, 0, 0, ctl)                      ; WM_GETFONT
+    hdc := DllCall("GetDC", "Ptr", ctl.Hwnd, "Ptr")
+    old := DllCall("SelectObject", "Ptr", hdc, "Ptr", hFont, "Ptr")
+    tm := Buffer(64, 0)
+    DllCall("GetTextMetricsW", "Ptr", hdc, "Ptr", tm)
+    DllCall("SelectObject", "Ptr", hdc, "Ptr", old)
+    DllCall("ReleaseDC", "Ptr", ctl.Hwnd, "Ptr", hdc)
+    lineH := NumGet(tm, 0, "Int")
+    rc := Buffer(16, 0)
+    DllCall("GetClientRect", "Ptr", ctl.Hwnd, "Ptr", rc)
+    cw := NumGet(rc, 8, "Int"), ch := NumGet(rc, 12, "Int")
+    top := Max(0, (ch - lineH) // 2)
+    NumPut("Int", padX, "Int", top, "Int", cw - padX, "Int", top + lineH, rc)
+    SendMessage(0xB3, 0, rc.Ptr, ctl)                          ; EM_SETRECT
+}
+
 Separator() {
     global popup
     popup.AddText("xm y+12 w" PANEL_W " h1 Background3A3A3A")
@@ -151,7 +170,7 @@ Separator() {
 
 ; ================= Ouverture / fermeture =================
 OpenPopup() {
-    global popup, fading, fadeStart
+    global popup, fading, fadeStart, openTick
     BuildGui()
     GetMouseWorkArea(&l, &t, &r, &b)
     popup.Show("Hide")
@@ -163,6 +182,7 @@ OpenPopup() {
 
     ; Fondu non bloquant : le panneau peut être refermé à tout moment
     fadeStart := A_TickCount
+    openTick := A_TickCount
     fading := true
     DllCall("winmm\timeBeginPeriod", "UInt", 1)
     SetTimer(FadeStep, 10)
@@ -205,9 +225,14 @@ ClosePopup() {
 }
 
 CheckFocus() {
-    global popup
-    if popup && !WinActive(popup)
-        ClosePopup()
+    global popup, openTick
+    if (!popup || WinActive(popup))
+        return
+    if (A_TickCount - openTick < 700) {     ; juste ouvert : on reprend le focus au lieu de fermer
+        try WinActivate(popup)
+        return
+    }
+    ClosePopup()
 }
 
 GetMouseWorkArea(&l, &t, &r, &b) {
@@ -417,10 +442,23 @@ Evaluate(raw) {
     if (s = "" || RegExMatch(s, "^[\d.,]+$"))
         return ""
 
-    ; Dates
-    if (res := EvalDate(s))
-        return res
+    ; 25/12 peut être une date ou une division : on calcule les deux
+    dateRes := ""
+    try dateRes := EvalDate(s)
+    if (IsObject(dateRes) && !dateRes.ambig)
+        return dateRes
+    try calcRes := EvalCalc(s)
+    catch as e {
+        if IsObject(dateRes)
+            return dateRes
+        throw e
+    }
+    if IsObject(dateRes)
+        return {t: calcRes.t "  ·  " dateRes.short, c: calcRes.c}
+    return calcRes
+}
 
+EvalCalc(s) {
     ; HT / TTC
     if RegExMatch(s, "i)^(.+?)\s*(?<![a-z])(ht|ttc)(?:\s+(\d+(?:[.,]\d+)?)\s*%?)?$", &m) {
         r := Calc(m[1]).Parse()
@@ -462,18 +500,20 @@ EvalDate(s) {
     d1 := ParseDate(m[1], m[2] = "")
     if (d1 = "")
         return ""
+    ambig := !(m[1] ~= "i)^(auj|demain|hier)")    ; jj/mm seul = peut-être une division
     today := FormatTime(, "yyyyMMdd")
     if (m[2] = "") {
         n := DateDiff(d1, today, "Days")
         rel := n = 0 ? "Aujourd'hui" : n > 0 ? "Dans " Plural(n, "jour") : "Il y a " Plural(-n, "jour")
-        return {t: rel "  ·  " LongDate(d1), c: FormatTime(d1, "dd/MM/yyyy")}
+        return {t: rel "  ·  " LongDate(d1), c: FormatTime(d1, "dd/MM/yyyy"), ambig: ambig
+              , short: ShortDate(d1) " : " StrLower(SubStr(rel, 1, 1)) SubStr(rel, 2)}
     }
     d2 := ParseDate(Trim(m[3]))
     if (d2 != "") {
         if (m[2] = "+")
             return ""          ; date + date : on laisse le calcul normal (ex. 1/2 + 1/4)
         n := DateDiff(d1, d2, "Days")
-        return {t: Plural(n, "jour"), c: String(n)}
+        return {t: Plural(n, "jour"), c: String(n), ambig: ambig, short: "écart " Plural(n, "jour")}
     }
     r := Calc(Trim(m[3])).Parse()
     if (r.d = "")
@@ -483,7 +523,7 @@ EvalDate(s) {
     else
         throw Error("pas une durée")
     res := DateAdd(d1, Round((m[2] = "-" ? -1 : 1) * days), "Days")
-    return {t: LongDate(res), c: FormatTime(res, "dd/MM/yyyy")}
+    return {t: LongDate(res), c: FormatTime(res, "dd/MM/yyyy"), ambig: ambig, short: ShortDate(res)}
 }
 
 ParseDate(txt, roll := false) {
@@ -691,12 +731,16 @@ AutoRemove(*) {
 }
 
 AutoToggle(*) {
-    global autoOn
+    global autoOn, autoStopTick
+    if (!autoOn && A_TickCount - autoStopTick < 400)
+        return                                  ; même appui que celui déjà détecté par la boucle
     autoOn := !autoOn
-    if autoOn
+    if autoOn {
         SetTimer(ClickLoop, -1)
-    ToolTip(autoOn ? "Autoclic activé" : "Autoclic désactivé")
-    SetTimer(() => ToolTip(), -700)
+        ToolTip("Autoclic activé")
+        SetTimer(() => ToolTip(), -700)
+    } else
+        autoStopTick := A_TickCount
     RefreshAutoUI()
 }
 
@@ -717,13 +761,15 @@ AutoHoldUp(*) {
 
 ; Boucle de clics précise (QueryPerformanceCounter), réagit aux raccourcis entre deux clics
 ClickLoop() {
-    global autoOn, autoCfg
+    global autoOn, autoCfg, autoStopTick
     cfg := autoCfg
     if !cfg {
         autoOn := false
         return
     }
+    SendMode("Event")          ; SendInput désactive le hook clavier pendant l'envoi → la touche d'arrêt était ratée
     SetMouseDelay(-1)
+    keyWas := GetKeyState(cfg.key, "P")
     DllCall("winmm\timeBeginPeriod", "UInt", 1)
     freq := 0, nextT := 0, now := 0
     DllCall("QueryPerformanceFrequency", "Int64*", &freq)
@@ -740,6 +786,13 @@ ClickLoop() {
         nextT += stepT
         loop {
             Sleep(-1)
+            ; Lecture directe de la touche en plus du raccourci, pour que l'arrêt ne soit jamais raté
+            down := GetKeyState(cfg.key, "P")
+            if (cfg.hold && !down)
+                autoOn := false
+            else if (!cfg.hold && down && !keyWas)
+                autoOn := false, autoStopTick := A_TickCount
+            keyWas := down
             DllCall("QueryPerformanceCounter", "Int64*", &now)
             remMs := (nextT - now) * 1000 / freq
             if (!autoOn || remMs <= 0)
@@ -751,6 +804,10 @@ ClickLoop() {
             nextT := now
     }
     DllCall("winmm\timeEndPeriod", "UInt", 1)
+    if !cfg.hold {
+        ToolTip("Autoclic désactivé")
+        SetTimer(() => ToolTip(), -700)
+    }
     RefreshAutoUI()
 }
 
