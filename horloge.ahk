@@ -98,7 +98,7 @@ TogglePopup() {
 BuildGui() {
     global popup, timeTxt, dateTxt, calTitle, calCells, cellDates, cellKeys, calResult
     global calY, calM, selA, selB, inputEdit, resultTxt, timerTxt, autoTxt
-    global hist, histPos
+    global hist, histPos, weatherTxt, colorSwatch, srvRows
 
     popup := Gui("+AlwaysOnTop -Caption +ToolWindow")
     popup.BackColor := C_BG
