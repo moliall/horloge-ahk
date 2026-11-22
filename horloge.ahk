@@ -19,6 +19,9 @@ CoordMode("Mouse", "Screen")
 ;   Dates        25/12   auj + 45j   demain + 2 sem   25/12 - 01/11
 ;   Minuteur     t 25   t 1h30 pâtes   t stop
 ;   Alarme       @18h30   @7h réveil
+;   Météo        météo   météo Rodez
+;   Serveurs     statut   ping neoheberg.fr
+;   Divers       ip   cours cac   mdp 20   #FF8800   rgb(255,136,0)   ts   ts 1732300000
 ;   Autoclic     auto F6 5ms   auto F7 50ms droit x100   auto F8 10ms maintien   auto stop
 
 ; ===== Réglages =====
@@ -31,6 +34,8 @@ FADE_MS   := 120        ; durée du fondu d'ouverture
 TIMER_RE  := "i)^\s*(?:t|timer|minuteur)(?:\s+(.*))?$"
 ALARM_RE  := "^\s*@\s*(\d{1,2})(?:[h:](\d{2})?)?\s*(.*)$"
 AUTO_RE   := "i)^\s*auto(?:\s+(.*))?$"
+METEO_VILLE := "Saint-Dié-des-Vosges"                 ; ville de la météo du panneau
+SERVERS     := ["neoheberg.fr", "dash.neoheberg.fr"]  ; sites surveillés (mettre [] pour masquer la section)
 
 ; ===== État =====
 popup := 0, fading := false, fadeStart := 0, openTick := 0
@@ -46,8 +51,17 @@ HIST_MAX  := 100
 
 LoadHistory()
 
-SetTimer(() => LoadRates(), -100)        ; taux de change au démarrage
-SetTimer(LoadRates, 6 * 3600 * 1000)     ; puis toutes les 6 h
+weatherTxt := 0, colorSwatch := 0, srvRows := Map()
+weatherCache := "", cityCache := Map()
+srvState := Map(), srvLastCheck := 0, srvPending := 0
+httpPending := []
+
+SetTimer(() => LoadRates(), -100)            ; taux de change au démarrage
+SetTimer(LoadRates, 6 * 3600 * 1000)         ; puis toutes les 6 h
+SetTimer(() => UpdatePanelWeather(), -300)   ; météo au démarrage
+SetTimer(UpdatePanelWeather, 15 * 60 * 1000) ; puis toutes les 15 min
+SetTimer(() => CheckServers(), -500)         ; statut des serveurs au démarrage
+SetTimer(CheckServers, 2 * 60 * 1000)        ; puis toutes les 2 min
 
 #n:: {
     Send("{Blind}{vkE8}")   ; empêche le menu Démarrer de s'ouvrir au relâchement de Win
@@ -96,6 +110,8 @@ BuildGui() {
     timeTxt := popup.AddText("xm w" PANEL_W " Center")
     popup.SetFont("s12 cB0B0B0", "Segoe UI")
     dateTxt := popup.AddText("xm y+0 w" PANEL_W " Center")
+    popup.SetFont("s10 c9A9A9A", "Segoe UI")
+    weatherTxt := popup.AddText("xm y+4 w" PANEL_W " Center")
 
     Separator()
 
@@ -130,6 +146,23 @@ BuildGui() {
 
     Separator()
 
+    ; Statut des serveurs (clic = ouvrir le site)
+    srvRows := Map()
+    if SERVERS.Length {
+        for idx, host in SERVERS {
+            popup.SetFont("s10 c6A6A6A", "Segoe UI")
+            dot := popup.AddText("xm y+" (idx = 1 ? 10 : 2) " w16 h20 +0x200", "●")
+            popup.SetFont("s10 cE0E0E0", "Segoe UI")
+            name := popup.AddText("x+4 yp w180 h20 +0x200", host)
+            popup.SetFont("s10 c9A9A9A", "Segoe UI")
+            ms := popup.AddText("x+0 yp w80 h20 +0x200 Right")
+            for ctl in [dot, name, ms]
+                ctl.OnEvent("Click", OpenSite.Bind(host))
+            srvRows[host] := {dot: dot, ms: ms, key: ""}
+        }
+        Separator()
+    }
+
     ; Saisie : champ "multi-ligne" utilisé sur une ligne, pour pouvoir centrer le texte verticalement
     popup.SetFont("s12 cFFFFFF", "Segoe UI")
     inputEdit := popup.AddEdit("xm y+12 w" PANEL_W " h36 -E0x200 +Multi -VScroll -HScroll -Wrap Background2A2A2A")
@@ -138,6 +171,7 @@ BuildGui() {
 
     popup.SetFont("s10 c9A9A9A", "Segoe UI")
     resultTxt := popup.AddText("xm y+6 w" PANEL_W " Right")
+    colorSwatch := popup.AddText("xp yp+1 w14 h14 Hidden Background" C_BG)
     timerTxt := popup.AddText("xm y+4 w" PANEL_W " c" C_TODAY)
     timerTxt.OnEvent("Click", (*) => StopTimer())
     autoTxt := popup.AddText("xm y+2 w" PANEL_W " c" C_TODAY)
@@ -155,6 +189,10 @@ BuildGui() {
     UpdateClock()
     RefreshTimerUI()
     RefreshAutoUI()
+    RefreshWeatherUI()
+    RefreshServersUI()
+    if (A_TickCount - srvLastCheck > 30000)
+        CheckServers()
 }
 
 ; Centre le texte d'un Edit multi-ligne (EM_SETRECT) avec une marge horizontale
@@ -384,6 +422,30 @@ Interpret(s) {
         return {t: "Entrée : minuteur de " FmtTimeLong(p.secs) (p.label != "" ? "  ·  " p.label : ""), c: ""
               , run: () => StartTimer(p.secs, p.label, "")}
     }
+    if RegExMatch(s, "i)^\s*m[ée]t[ée]o(?:\s+(.+?))?\s*$", &m) {
+        city := m[1] != "" ? m[1] : METEO_VILLE
+        return {t: "Entrée : météo de " city, c: "", run: () => RunWeather(city)}
+    }
+    if RegExMatch(s, "i)^\s*statut\s*$")
+        return {t: "Entrée : vérifier les serveurs", c: "", run: RunStatus}
+    if RegExMatch(s, "i)^\s*(?:ping|statut)\s+(\S+)\s*$", &m) {
+        host := RegExReplace(m[1], "i)^https?://")
+        return {t: "Entrée : tester " host, c: "", run: () => RunPing(host)}
+    }
+    if RegExMatch(s, "i)^\s*ip\s*$")
+        return {t: "Entrée : IP locale et publique", c: "", run: RunIp}
+    if RegExMatch(s, "i)^\s*(?:cours|bourse)\s+(\S+)\s*$", &m) {
+        tk := QuoteTicker(m[1])
+        return {t: "Entrée : cours de " tk, c: "", run: () => RunQuote(tk)}
+    }
+    if RegExMatch(s, "i)^\s*(?:mdp|pass|password)(?:\s+(\d+))?\s*$", &m) {
+        n := Max(6, Min(128, m[1] != "" ? Integer(m[1]) : 16))
+        return {t: "Entrée : mot de passe de " n " caractères", c: "", run: () => RunPassword(n)}
+    }
+    if RegExMatch(s, "i)^\s*ts(?:\s+(.+?))?\s*$", &m)
+        return TsInfo(m[1])
+    if (ci := ColorInfo(s))
+        return ci
     if RegExMatch(s, ALARM_RE, &m) {
         al := ParseAlarm(m)
         return {t: "Entrée : alarme à " al.at " (dans " FmtTimeLong(al.secs) ")", c: ""
@@ -396,11 +458,17 @@ Interpret(s) {
 }
 
 Preview() {
-    global inputEdit, resultTxt
+    global inputEdit, resultTxt, colorSwatch
     try res := Interpret(inputEdit.Value)
     catch
         res := ""
     SetIfChanged(resultTxt, IsObject(res) ? res.t : "")
+    if (IsObject(res) && res.HasOwnProp("color")) {
+        colorSwatch.Opt("Background" res.color)
+        colorSwatch.Visible := true
+        colorSwatch.Redraw()
+    } else if colorSwatch.Visible
+        colorSwatch.Visible := false
 }
 
 Submit() {
@@ -416,9 +484,14 @@ Submit() {
     HistPush(s)
     if res.run {
         fn := res.run
-        try fn()
+        out := ""
+        try out := fn()
         catch as e {
             resultTxt.Value := e.Message
+            return
+        }
+        if (out != "") {            ; l'action affiche un résultat : on garde la saisie
+            resultTxt.Value := out
             return
         }
         inputEdit.Value := ""
@@ -863,22 +936,372 @@ RefreshAutoUI() {
 }
 
 ; ================= Taux de change =================
-LoadRates() {
-    try {
-        req := ComObject("WinHttp.WinHttpRequest.5.1")
-        req.SetTimeouts(3000, 3000, 3000, 5000)
-        req.Open("GET", "https://open.er-api.com/v6/latest/EUR", false)
-        req.Send()
-        body := req.ResponseText
-        pos := InStr(body, '"rates"')
-        if (!pos || !InStr(body, '"success"'))
-            return
-        while (pos := RegExMatch(body, '"([A-Z]{3})"\s*:\s*([\d.eE+-]+)', &m, pos)) {
-            Calc.SetCurrency(m[1], Float(m[2]))
-            pos += StrLen(m[0])
-        }
+LoadRates() => HttpReq("GET", "https://open.er-api.com/v6/latest/EUR", RatesCb)
+
+RatesCb(status, body, ms) {
+    pos := InStr(body, '"rates"')
+    if (status != 200 || !pos || !InStr(body, '"success"'))
+        return
+    while (pos := RegExMatch(body, '"([A-Z]{3})"\s*:\s*([\d.eE+-]+)', &m, pos)) {
+        Calc.SetCurrency(m[1], Float(m[2]))
+        pos += StrLen(m[0])
     }
 }
+
+; ================= Requêtes web non bloquantes =================
+; cb(status, body, ms) — status = 0 si erreur ou délai dépassé
+HttpReq(method, url, cb, timeout := 6000) {
+    global httpPending
+    try {
+        req := ComObject("WinHttp.WinHttpRequest.5.1")
+        req.Open(method, url, true)
+        req.SetRequestHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) horloge-ahk")
+        req.Send()
+    } catch {
+        cb.Call(0, "", 0)
+        return
+    }
+    httpPending.Push({req: req, cb: cb, t0: A_TickCount, timeout: timeout})
+    SetTimer(HttpPoll, 50)
+}
+
+HttpPoll() {
+    global httpPending
+    i := httpPending.Length
+    while (i >= 1) {
+        p := httpPending[i]
+        done := false, status := 0, body := ""
+        try {
+            if p.req.WaitForResponse(0) {
+                done := true
+                status := p.req.Status
+                body := p.req.ResponseText
+            }
+        } catch
+            done := true
+        if (!done && A_TickCount - p.t0 > p.timeout) {
+            try p.req.Abort()
+            done := true
+        }
+        if done {
+            httpPending.RemoveAt(i)
+            try p.cb.Call(status, body, A_TickCount - p.t0)
+        }
+        i--
+    }
+    if !httpPending.Length
+        SetTimer(HttpPoll, 0)
+}
+
+ShowResult(txt) {
+    global popup, resultTxt
+    if popup
+        resultTxt.Value := txt
+}
+
+UrlEncode(str) {
+    buf := Buffer(StrPut(str, "UTF-8"))
+    StrPut(str, buf, "UTF-8")
+    out := ""
+    Loop buf.Size - 1 {
+        b := NumGet(buf, A_Index - 1, "UChar")
+        if (b >= 0x30 && b <= 0x39) || (b >= 0x41 && b <= 0x5A) || (b >= 0x61 && b <= 0x7A) || b = 0x2D || b = 0x2E || b = 0x5F || b = 0x7E
+            out .= Chr(b)
+        else
+            out .= Format("%{:02X}", b)
+    }
+    return out
+}
+
+; ================= Météo (Open-Meteo, sans compte) =================
+; cb(texte, nomDeVille) — texte vide si échec
+FetchWeather(city, cb) {
+    global cityCache
+    key := StrLower(Trim(city))
+    if cityCache.Has(key) {
+        ForecastWeather(cityCache[key], cb)
+        return
+    }
+    HttpReq("GET", "https://geocoding-api.open-meteo.com/v1/search?count=1&language=fr&name=" UrlEncode(city)
+          , GeoCb.Bind(key, cb))
+}
+
+GeoCb(key, cb, status, body, ms) {
+    global cityCache
+    if (status != 200 || !RegExMatch(body, '"latitude":\s*(-?[\d.]+)', &la) || !RegExMatch(body, '"longitude":\s*(-?[\d.]+)', &lo)) {
+        cb.Call("", "")
+        return
+    }
+    nm := ""
+    RegExMatch(body, '"name":\s*"([^"]+)"', &nm)
+    c := {lat: la[1], lon: lo[1], name: nm ? nm[1] : key}
+    cityCache[key] := c
+    ForecastWeather(c, cb)
+}
+
+ForecastWeather(c, cb) {
+    url := "https://api.open-meteo.com/v1/forecast?latitude=" c.lat "&longitude=" c.lon
+         . "&current=temperature_2m,weather_code&daily=temperature_2m_max,temperature_2m_min&timezone=auto&forecast_days=1"
+    HttpReq("GET", url, (status, body, ms) => cb.Call(ParseWeather(status, body), c.name))
+}
+
+ParseWeather(status, body) {
+    cur := InStr(body, '"current":')
+    if (status != 200 || !cur)
+        return ""
+    if (!RegExMatch(body, '"temperature_2m":\s*(-?[\d.]+)', &t, cur) || !RegExMatch(body, '"weather_code":\s*(\d+)', &w, cur))
+        return ""
+    d := WeatherDesc(Integer(w[1]))
+    out := d[1] "  " Round(t[1]) "°  " d[2]
+    if (RegExMatch(body, '"temperature_2m_max":\s*\[\s*(-?[\d.]+)', &mx) && RegExMatch(body, '"temperature_2m_min":\s*\[\s*(-?[\d.]+)', &mn))
+        out .= "  ·  " Round(mn[1]) "° / " Round(mx[1]) "°"
+    return out
+}
+
+WeatherDesc(code) {
+    if (code = 0)
+        return ["☀", "Ensoleillé"]
+    if (code = 1)
+        return ["🌤", "Peu nuageux"]
+    if (code = 2)
+        return ["⛅", "Nuageux"]
+    if (code = 3)
+        return ["☁", "Couvert"]
+    if (code = 45 || code = 48)
+        return ["🌫", "Brouillard"]
+    if (code >= 51 && code <= 57)
+        return ["🌦", "Bruine"]
+    if (code >= 61 && code <= 67)
+        return ["🌧", "Pluie"]
+    if (code >= 71 && code <= 77)
+        return ["❄", "Neige"]
+    if (code >= 80 && code <= 82)
+        return ["🌦", "Averses"]
+    if (code = 85 || code = 86)
+        return ["🌨", "Averses de neige"]
+    if (code >= 95)
+        return ["⛈", "Orage"]
+    return ["", "—"]
+}
+
+UpdatePanelWeather() => FetchWeather(METEO_VILLE, PanelWeatherCb)
+
+PanelWeatherCb(txt, name) {
+    global weatherCache
+    if (txt != "")
+        weatherCache := txt
+    RefreshWeatherUI()
+}
+
+RefreshWeatherUI() {
+    global popup, weatherTxt, weatherCache
+    if popup
+        SetIfChanged(weatherTxt, weatherCache)
+}
+
+RunWeather(city) {
+    FetchWeather(city, (txt, name) => ShowResult(txt != "" ? name "  ·  " txt : "Ville introuvable ou météo indisponible"))
+    return "Météo de " city "…"
+}
+
+; ================= Statut des serveurs =================
+CheckServers(cb := 0) {
+    global srvPending, srvLastCheck
+    if !SERVERS.Length {
+        if cb
+            cb.Call()
+        return
+    }
+    srvLastCheck := A_TickCount
+    srvPending := SERVERS.Length
+    for host in SERVERS
+        HttpReq("HEAD", "https://" host, ServerCb.Bind(host, cb), 5000)
+}
+
+ServerCb(host, cb, status, body, ms) {
+    global srvState, srvPending
+    srvState[host] := {ok: status >= 200 && status < 500, ms: ms, code: status}
+    srvPending--
+    RefreshServersUI()
+    if (srvPending <= 0 && cb)
+        cb.Call()
+}
+
+RefreshServersUI() {
+    global popup, srvRows, srvState
+    if !popup
+        return
+    for host, row in srvRows {
+        if !srvState.Has(host) {
+            color := "6A6A6A", label := "…"
+        } else {
+            st := srvState[host]
+            color := st.ok ? "4CAF50" : "E05050"
+            label := st.ok ? st.ms " ms" : st.code ? "HTTP " st.code : "hors ligne"
+        }
+        key := color "|" label
+        if (row.key = key)
+            continue
+        row.key := key
+        row.dot.SetFont("c" color)
+        row.dot.Redraw()
+        row.ms.Value := label
+    }
+}
+
+ServerSummary() {
+    down := ""
+    up := 0
+    for host in SERVERS {
+        if (srvState.Has(host) && srvState[host].ok)
+            up++
+        else
+            down .= (down = "" ? "" : ", ") host
+    }
+    return down != "" ? "Hors ligne : " down : "Tout est en ligne (" up "/" SERVERS.Length ")"
+}
+
+RunStatus(*) {
+    if !SERVERS.Length
+        return "Aucun serveur configuré (SERVERS en haut du script)"
+    CheckServers(() => ShowResult(ServerSummary()))
+    return "Vérification des serveurs…"
+}
+
+RunPing(host) {
+    HttpReq("HEAD", "https://" host
+          , (status, body, ms) => ShowResult(status ? host " répond en " ms " ms (HTTP " status ")" : host " ne répond pas")
+          , 6000)
+    return "Test de " host "…"
+}
+
+OpenSite(host, *) => Run("https://" host)
+
+; ================= IP =================
+RunIp(*) {
+    loc := "?"
+    for a in SysGetIPAddresses()
+        if !(a ~= "^(127\.|169\.254\.)") {
+            loc := a
+            break
+        }
+    HttpReq("GET", "https://api.ipify.org", (status, body, ms) => IpCb(loc, status, body))
+    return "Locale " loc "  ·  publique…"
+}
+
+IpCb(loc, status, body) {
+    pub := Trim(body)
+    if (status != 200 || !(pub ~= "^[\d.:a-fA-F]+$")) {
+        ShowResult("Locale " loc "  ·  publique introuvable")
+        return
+    }
+    A_Clipboard := pub
+    ShowResult("Locale " loc "  ·  Publique " pub "  ·  copiée")
+}
+
+; ================= Cours de bourse (Yahoo Finance) =================
+QuoteTicker(t) {
+    static alias := Map("cac", "^FCHI", "cac40", "^FCHI", "sp500", "^GSPC", "nasdaq", "^IXIC"
+                      , "dow", "^DJI", "dax", "^GDAXI", "btc", "BTC-EUR", "eth", "ETH-EUR")
+    l := StrLower(t)
+    return alias.Has(l) ? alias[l] : StrUpper(t)
+}
+
+RunQuote(tk) {
+    HttpReq("GET", "https://query1.finance.yahoo.com/v8/finance/chart/" UrlEncode(tk) "?range=1d&interval=1d"
+          , (status, body, ms) => QuoteCb(tk, status, body))
+    return "Cours de " tk "…"
+}
+
+QuoteCb(tk, status, body) {
+    if (status != 200 || !RegExMatch(body, '"regularMarketPrice":\s*(-?[\d.]+)', &pr)) {
+        ShowResult("Cours introuvable : " tk)
+        return
+    }
+    price := Float(pr[1])
+    cu := "", pc := ""
+    RegExMatch(body, '"currency":\s*"([A-Z]+)"', &cu)
+    RegExMatch(body, '"chartPreviousClose":\s*([\d.]+)', &pc)
+    txt := tk "  " FmtMoney(price) (cu ? " " cu[1] : "")
+    if pc {
+        chg := (price / Float(pc[1]) - 1) * 100
+        txt .= "  " (chg >= 0 ? "▲ +" : "▼ ") FmtNum(Round(chg, 2)) " %"
+    }
+    ShowResult(txt)
+}
+
+; ================= Mot de passe =================
+RunPassword(n) {
+    static chars := "ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*?-_=+"
+    buf := Buffer(n)
+    DllCall("bcrypt\BCryptGenRandom", "Ptr", 0, "Ptr", buf, "UInt", n, "UInt", 2)   ; aléatoire cryptographique
+    pwd := ""
+    Loop n
+        pwd .= SubStr(chars, Mod(NumGet(buf, A_Index - 1, "UChar"), StrLen(chars)) + 1, 1)
+    A_Clipboard := pwd
+    return pwd "  ·  copié"
+}
+
+; ================= Couleurs =================
+ColorInfo(s) {
+    if RegExMatch(s, "^\s*#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})\s*$", &m) {
+        hx := m[1]
+        if (StrLen(hx) = 3)
+            hx := SubStr(hx, 1, 1) SubStr(hx, 1, 1) SubStr(hx, 2, 1) SubStr(hx, 2, 1) SubStr(hx, 3, 1) SubStr(hx, 3, 1)
+        r := Integer("0x" SubStr(hx, 1, 2)), g := Integer("0x" SubStr(hx, 3, 2)), b := Integer("0x" SubStr(hx, 5, 2))
+        hsl := RgbToHsl(r, g, b)
+        rgb := "rgb(" r ", " g ", " b ")"
+        return {t: rgb "  ·  hsl(" hsl[1] ", " hsl[2] "%, " hsl[3] "%)", c: rgb, run: "", color: StrUpper(hx)}
+    }
+    if RegExMatch(s, "i)^\s*rgb\s*\(?\s*(\d{1,3})\s*[,;\s]\s*(\d{1,3})\s*[,;\s]\s*(\d{1,3})\s*\)?\s*$", &m) {
+        r := Integer(m[1]), g := Integer(m[2]), b := Integer(m[3])
+        if (r > 255 || g > 255 || b > 255)
+            return ""
+        hx := Format("{:02X}{:02X}{:02X}", r, g, b)
+        hsl := RgbToHsl(r, g, b)
+        return {t: "#" hx "  ·  hsl(" hsl[1] ", " hsl[2] "%, " hsl[3] "%)", c: "#" hx, run: "", color: hx}
+    }
+    return ""
+}
+
+RgbToHsl(r, g, b) {
+    r /= 255, g /= 255, b /= 255
+    mx := Max(r, g, b), mn := Min(r, g, b), l := (mx + mn) / 2
+    if (mx = mn)
+        return [0, 0, Round(l * 100)]
+    d := mx - mn
+    sat := l > 0.5 ? d / (2 - mx - mn) : d / (mx + mn)
+    hue := mx = r ? (g - b) / d + (g < b ? 6 : 0) : mx = g ? (b - r) / d + 2 : (r - g) / d + 4
+    return [Round(hue * 60), Round(sat * 100), Round(l * 100)]
+}
+
+; ================= Timestamps Unix =================
+; ts → maintenant · ts 1732300000 → date · ts 25/12/2026 18:00 → timestamp
+TsInfo(arg) {
+    off := Round(DateDiff(A_Now, A_NowUTC, "Seconds") / 60) * 60
+    arg := Trim(arg)
+    if (arg = "") {
+        n := DateDiff(A_NowUTC, "19700101000000", "Seconds")
+        return {t: "= " n "  (maintenant)", c: String(n), run: ""}
+    }
+    if RegExMatch(arg, "^\d{9,13}$") {
+        n := Integer(arg)
+        if (StrLen(arg) >= 12)
+            n := n // 1000                      ; millisecondes
+        d := DateAdd("19700101000000", n + off, "Seconds")
+        return {t: "= " Capitalize(FormatTime(d, "ddd d MMM yyyy  HH:mm:ss")), c: FormatTime(d, "dd/MM/yyyy HH:mm:ss"), run: ""}
+    }
+    if RegExMatch(arg, "^(\d{1,2})/(\d{1,2})/(\d{4})(?:\s+(\d{1,2})[:h](\d{2})(?::(\d{2}))?)?$", &m) {
+        loc := Format("{:04}{:02}{:02}{:02}{:02}{:02}", Integer(m[3]), Integer(m[2]), Integer(m[1]), N0(m[4]), N0(m[5]), N0(m[6]))
+        if !IsTime(loc)
+            throw Error("date invalide")
+        n := DateDiff(loc, "19700101000000", "Seconds") - off
+        return {t: "= " n, c: String(n), run: ""}
+    }
+    throw Error("format : ts, ts 1732300000 ou ts 25/12/2026 18:00")
+}
+
+N0(v) => v = "" ? 0 : Integer(v)
 
 ; ================= Moteur de calcul =================
 Qty(v, d := "", u := "", pct := false) => {v: v, d: d, u: u, pct: pct}
