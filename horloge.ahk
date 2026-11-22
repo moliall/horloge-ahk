@@ -41,6 +41,10 @@ inputEdit := 0, resultTxt := 0, timerTxt := 0, autoTxt := 0
 timerEnd := 0, timerTotal := 0, timerLabel := "", timerAt := ""
 autoCfg := 0, autoOn := false, autoStopTick := 0
 hist := [], histPos := 1
+HIST_FILE := A_AppData "\horloge-ahk\historique.txt"   ; historique conservé entre les redémarrages
+HIST_MAX  := 100
+
+LoadHistory()
 
 SetTimer(() => LoadRates(), -100)        ; taux de change au démarrage
 SetTimer(LoadRates, 6 * 3600 * 1000)     ; puis toutes les 6 h
@@ -429,9 +433,38 @@ HistPush(s) {
     global hist, histPos
     if (!hist.Length || hist[hist.Length] != s)
         hist.Push(s)
-    if (hist.Length > 50)
+    while (hist.Length > HIST_MAX)
         hist.RemoveAt(1)
     histPos := hist.Length + 1
+    SaveHistory()
+}
+
+LoadHistory() {
+    global hist, histPos
+    if !FileExist(HIST_FILE)
+        return
+    try {
+        for line in StrSplit(FileRead(HIST_FILE, "UTF-8"), "`n", "`r")
+            if (Trim(line) != "")
+                hist.Push(line)
+    }
+    while (hist.Length > HIST_MAX)
+        hist.RemoveAt(1)
+    histPos := hist.Length + 1
+}
+
+SaveHistory() {
+    global hist
+    try {
+        SplitPath(HIST_FILE, , &dir)
+        DirCreate(dir)
+        out := ""
+        for line in hist
+            out .= line "`n"
+        f := FileOpen(HIST_FILE, "w", "UTF-8")
+        f.Write(out)
+        f.Close()
+    }
 }
 
 HistNav(dir) {

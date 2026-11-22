@@ -19,7 +19,7 @@ Petit panneau pour Windows 11 qui remplace le centre de notifications (Win + N) 
 - Molette : change de mois (haut = mois suivant) — clic sur le nom du mois : revient à aujourd'hui
 
 ### Saisie multifonction
-Entrée sur un calcul copie le résultat. Flèches haut/bas : historique.
+Entrée sur un calcul copie le résultat. Flèches haut/bas : historique (conservé entre les redémarrages dans `%AppData%\horloge-ahk\historique.txt`).
 
 | Fonction | Exemples |
 |---|---|
